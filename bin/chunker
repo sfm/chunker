@@ -110,6 +110,8 @@ lwp-request(1) (aka GET(1)) decodes the output but
 not in a stream-based manner.  The
 process grows arbitrarily large.
 
+Konqueror decodes the output correctly in a stream-based manner.
+
 No clients currently support treating the contents of "X-Deferred-Status"
 as though it was the response's HTTP status code.  
 
@@ -123,11 +125,6 @@ Report bugs to <simon@inpher.com>.  If anyone can tell me why the
 deferred status idea is flawed, please let me know.
 
 =cut
-
-# TODO:
-# - see BUGS above
-# - add option to add trailing checksum headers like Content-MD5 and
-#   Content-SHA1
 
 use strict;
 use warnings FATAL => 'all';
