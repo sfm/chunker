@@ -1,0 +1,219 @@
+#!/usr/bin/perl
+
+=pod
+
+=head1 NAME
+
+chunker - encode a program's output with chunked HTTP Transfer-Encoding
+
+=head1 SYNOPSIS
+
+chunker [OPTIONS] PROG [ARG ...]
+
+=head1 DESCRIPTION
+
+Run PROG with ARGs and convert its output to an HTTP response with
+chunked transfer encoding.
+
+chunker is designed to work in a CGI or similar situation where the success of
+PROG is not known when output starts.  It sets the initial status
+line to "208 Trailing Status", with the intended final status
+delivered in a trailing header called "X-Deferred-Status".  If
+PROG exits successfully, the deferred status is "200 OK".  If PROG
+fails (non-zero exit), the deferred status is "500 Internal Server
+Error".
+
+The mechanism for adding trailing headers to a chunked-encoded
+HTTP response is defined in RFC2616. However, the concept of deferring
+the HTTP status code to a trailing header is something I just made up.
+There is probably a reason, fundamental to HTTP, why doing this is
+wrong in principle.  However, it does seem like a reasonable thing
+to want to do: the thought has probably crossed the mind of many a
+web programmer encountering an error part way through 
+emitting a stream.
+
+To use chunker's chunk-encoding functionality without breaking current
+web standards, use the --standards option (see below).
+
+=head1 OPTIONS
+
+=head2 -c, --cgi (not fully implemented)
+
+PROG is a CGI script.  Merge chunker's own headers with the headers emitted by
+PROG to form a coherent HTTP response.
+
+=head2 --standards (not implemented)
+
+Adhere to current HTTP standards.  Currently equivalent to 
+"--initial-status '200 OK' --status-from-cgi".
+
+=head2 --initial-status=STATUS (not implemented)
+
+Emit STATUS instead of the non-standard "208 Trailing Status" HTTP status code
+at the start of the response.
+
+=head2 --status-from-cgi (not implemented)
+
+If PROG emits a Status header, use that instead of the built-in default
+of 208 and instead of any value given to --initial-status.
+
+=head2 --content-type=TYPE
+
+Set the Content-Type header.  chunker does not emit one by default.
+
+=head2 --add-hash HASHTYPE (not implemented)
+
+md5 or sha1
+
+=head1 EXAMPLES
+
+The text emitted by "echo hello, world" is 13 characters long, which explains
+the d (hex) you should see contained in the output of this:
+
+  $ chunker echo hello, world
+
+Here is a complete CGI script to transfer a representation of a filesystem,
+perhaps as part of a RESTful backup system:
+
+  #!/bin/sh
+  chunker tar cf - --one-file-system --sparse /my/massive/volume
+
+To quickly modify an existing perl CGI script to use chunker, you can
+do something hacky like this:
+
+  $ENV{'http://oxix.org/chunker'}++
+    or exec qw(chunker --cgi), __FILE__
+    or die "exec: $!: chunker";
+
+
+=head1 BUGS
+
+Does not currently check for TE: headers in the request.
+
+Does not check for headers from child process which clash with chunker's
+headers.
+
+Most options are not implemented.
+
+The choices of 208 and X-Deferred-Status are arbitrary and no equivalents
+to these are defined by IANA, W3C, IETF, etc.
+
+=head1 CLIENT SUPPORT
+
+curl(1) decodes the output correctly in a stream-based manner.  The process
+doesn't grow beyond a few MB.
+
+wget(1) does not decode the output, so the user sees chunk-encoded data.  There
+does not seem to be an option for enabling chunk decoding in wget.
+
+lwp-request(1) (aka GET(1)) decodes the output but 
+not in a stream-based manner.  The
+process grows arbitrarily large.
+
+No clients currently support treating the contents of "X-Deferred-Status"
+as though it was the response's HTTP status code.  
+
+=head1 AUTHOR
+
+Written by Simon Michelson <simon@inpher.com>.
+
+=head1 REPORTING BUGS
+
+Report bugs to <simon@inpher.com>.  If anyone can tell me why the 
+deferred status idea is flawed, please let me know.
+
+=cut
+
+# TODO:
+# - see BUGS above
+# - add option to add trailing checksum headers like Content-MD5 and
+#   Content-SHA1
+
+use strict;
+use warnings FATAL => 'all';
+
+use Getopt::Long;
+use IO::Pipe;
+use POSIX qw( WIFSIGNALED WTERMSIG WIFEXITED WEXITSTATUS );
+
+# These are the two things it would be nice to get proper assignments on:
+my $defer_status_code = "208";
+my $deferred_status_header_name = "X-Deferred-Status";
+
+my $defer_status_code_line = "$defer_status_code Trailing Status";
+my $cgi_defer_status_header = "Status: $defer_status_code_line";
+
+my $bs = 1024*1024;
+my $appid = 'http://oxix.org/chunker/';
+
+my $usage = <<EOT;
+Usage:
+    chunker [OPTIONS] PROG [ARG ...]
+
+    OPTIONS
+    -c,--cgi              PROG is a CGI script (merge its headers)
+    --content-type=TYPE,
+    -t TYPE               default is to leave it to the web server
+EOT
+
+my ($cgi, $type);
+Getopt::Long::Configure( qw( require_order no_ignore_case ) );
+GetOptions('c|cgi' => \$cgi, 't|content-type=s' => \$type) or die $usage;
+
+my (@to_run) = @ARGV;
+@ARGV or die "missing PROG: $usage";
+
+my $pipe = IO::Pipe->new;
+#pipe(my $reader, my $writer);
+
+if( my $child = fork ) {
+    $pipe->reader;
+
+    print "$cgi_defer_status_header\n";
+    print "Transfer-Encoding: chunked\n";
+    print "Trailer: X-Deferred-Status\n";
+    defined $type and print "Content-Type: $type\n";
+
+    if( $cgi ) {
+        HEADER: while( <$pipe> ) {
+            # todo: see what child's idea of Status is, save for later
+            # Maybe use HTTP::Header for this?
+            print;
+            last HEADER if $_ =~ /^\r?\n$/;
+        }
+    }
+    else {
+        print "\n";
+    }
+
+    # <http://tools.ietf.org/html/rfc2616#section-3.6.1>
+    my $buf;
+    while( my $len = $pipe->read( $buf, $bs ) ) {
+        defined $len or die "pipe problem";
+        printf "%x\r\n", $len;
+        print "$buf\r\n";
+    }
+    print "0\r\n\r\n";
+
+    wait;
+    my $detail; # currently doesn't go anywhere
+    my $errors;
+    if( WIFSIGNALED( $? ) ) {
+        $detail = "child died with signal " . WTERMSIG( $? );
+        $errors++;
+    }
+    elsif( WIFEXITED( $? ) and WEXITSTATUS( $? ) != 0 ) {
+        $detail = "child exited with status " . WEXITSTATUS( $? );
+        $errors++;
+    }
+
+    my $http_status = $errors ? "500 Internal Server Error" : "200 OK";
+    # see earlier note about grabbing the child's Status in cgi mode
+
+    print "$deferred_status_header_name: $http_status\r\n";
+}
+else {
+    $pipe->writer;
+    open(STDOUT, ">&", $pipe) or die $!;
+    exec @to_run or die "$!: $to_run[0]\n";
+}
