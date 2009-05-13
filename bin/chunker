@@ -79,10 +79,10 @@ perhaps as part of a RESTful backup system:
   chunker tar cf - --one-file-system --sparse /my/massive/volume
 
 To quickly modify an existing perl CGI script to use chunker, you can
-do something hacky like this:
+do something hacky like putting this at the start of the script:
 
   $ENV{'http://oxix.org/chunker'}++
-    or exec qw(chunker --cgi), __FILE__
+    or exec qw(chunker --cgi), __FILE__, @ARGV
     or die "exec: $!: chunker";
 
 
