@@ -137,6 +137,8 @@ use POSIX qw( WIFSIGNALED WTERMSIG WIFEXITED WEXITSTATUS );
 my $defer_status_code = "208";
 my $deferred_status_header_name = "X-Deferred-Status";
 
+my $CRLF = "\r\n";
+
 my $defer_status_code_line = "$defer_status_code Trailing Status";
 my $cgi_defer_status_header = "Status: $defer_status_code_line";
 
@@ -166,10 +168,10 @@ my $pipe = IO::Pipe->new;
 if( my $child = fork ) {
     $pipe->reader;
 
-    print "$cgi_defer_status_header\n";
-    print "Transfer-Encoding: chunked\n";
-    print "Trailer: X-Deferred-Status\n";
-    defined $type and print "Content-Type: $type\n";
+    print "$cgi_defer_status_header$CRLF";
+    print "Transfer-Encoding: chunked$CRLF";
+    print "Trailer: X-Deferred-Status$CRLF";
+    defined $type and print "Content-Type: $type$CRLF";
 
     if( $cgi ) {
         HEADER: while( <$pipe> ) {
@@ -180,17 +182,18 @@ if( my $child = fork ) {
         }
     }
     else {
-        print "\n";
+        print "$CRLF";
     }
 
     # <http://tools.ietf.org/html/rfc2616#section-3.6.1>
     my $buf;
     while( my $len = $pipe->read( $buf, $bs ) ) {
         defined $len or die "pipe problem";
-        printf "%x\r\n", $len;
-        print "$buf\r\n";
+        printf "%x$CRLF", $len;
+        print "$buf$CRLF";
     }
-    print "0\r\n\r\n";
+
+    print "0$CRLF";
 
     wait;
     my $detail; # currently doesn't go anywhere
@@ -207,7 +210,7 @@ if( my $child = fork ) {
     my $http_status = $errors ? "500 Internal Server Error" : "200 OK";
     # see earlier note about grabbing the child's Status in cgi mode
 
-    print "$deferred_status_header_name: $http_status\r\n";
+    print "$deferred_status_header_name: $http_status$CRLF";
 }
 else {
     $pipe->writer;
